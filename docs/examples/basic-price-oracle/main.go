@@ -14,12 +14,15 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"log"
 	"math/big"
 	"net"
+	"net/http"
 	"os"
 	"time"
 
@@ -33,7 +36,7 @@ import (
 
 const (
 	// serviceListenAddress is the listening address of the service.
-	serviceListenAddress = "localhost:8095"
+	serviceListenAddress = "0.0.0.0:8095"
 )
 
 // setupLogger sets up the logger to write logs to a file.
@@ -74,8 +77,7 @@ func isSupportedSubjectAsset(subjectAsset *oraclerpc.AssetSpecifier) bool {
 		return false
 	}
 
-	supportedAssetIdStr := "7b4336d33b019df9438e586f83c587ca00fa65602497b9" +
-		"3ace193e9ce53b1a67"
+	supportedAssetIdStr := "f477e00819e4ea0ec87e38a74c808e5ec24fc07ec84f4a6e7f2f1436e7ebe664"
 	supportedAssetIdBytes, err := hex.DecodeString(supportedAssetIdStr)
 	if err != nil {
 		fmt.Println("Error decoding supported asset hex string:", err)
@@ -101,53 +103,102 @@ func isSupportedSubjectAsset(subjectAsset *oraclerpc.AssetSpecifier) bool {
 	return false
 }
 
+// fetchBTCUSDPrice fetches the current BTC to USD exchange rate from a public API.
+func fetchBTCUSDPrice() (float64, error) {
+	const apiUrl = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"
+
+	logrus.Infof("Fetching BTC price from: %s", apiUrl)
+
+	resp, err := http.Get(apiUrl)
+	if err != nil {
+		return 0, fmt.Errorf("failed to fetch BTC price: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("non-200 response: %d", resp.StatusCode)
+	}
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read response body: %v", err)
+	}
+
+	logrus.Debugf("API response body: %s", string(body))
+
+	var result map[string]map[string]float64
+	if err := json.Unmarshal(body, &result); err != nil {
+		logrus.Errorf("Failed to parse API response JSON: %v", err)
+		return 0, fmt.Errorf("failed to parse JSON: %v", err)
+	}
+
+	price, ok := result["bitcoin"]["usd"]
+	if !ok {
+		logrus.Errorf("BTC price not found in API response")
+		return 0, fmt.Errorf("BTC price not found in response")
+	}
+
+	logrus.Infof("Fetched BTC price: %f USD", price)
+	return price, nil
+}
+
 // getAssetRates returns the asset rates for a given transaction type and
 // subject asset max amount.
 func getAssetRates(transactionType oraclerpc.TransactionType,
 	subjectAssetMaxAmount uint64) (oraclerpc.AssetRates, error) {
 
-	// Determine the rate based on the transaction type.
-	var subjectAssetRate rfqmath.BigIntFixedPoint
-	if transactionType == oraclerpc.TransactionType_PURCHASE {
-		// As an example, the purchase rate is $42,000 per BTC. To
-		// increase precision, we represent this as 42 billion
-		// taproot asset units per BTC. Therefore, we scale the
-		// $42,000 per BTC rate by a factor of 10^6.
-		subjectAssetRate = rfqmath.FixedPointFromUint64[rfqmath.BigInt](
-			42_000, 6,
-		)
-	} else {
-		// Our example sell rate will be lower at $40,000 per BTC. This
-		// rate will be represented as 40 billion taproot asset units
-		// per BTC. Therefore, we scale the $40,000 per BTC rate by a
-		// factor of 10^6.
-		subjectAssetRate = rfqmath.FixedPointFromUint64[rfqmath.BigInt](
-			40_000, 6,
-		)
+	// Fetch the real-time BTC to USD price.
+	btcPriceUSD, err := fetchBTCUSDPrice()
+	if err != nil {
+		return oraclerpc.AssetRates{}, fmt.Errorf("failed to fetch BTC price: %v", err)
 	}
 
-	// Set the rate expiry to 5 minutes by default.
-	expiry := time.Now().Add(5 * time.Minute).Unix()
+	// ensure the price is valid.
+	if btcPriceUSD <= 0 {
+		logrus.Errorf("Invalid BTC price fetched: %f", btcPriceUSD)
+		return oraclerpc.AssetRates{}, fmt.Errorf("invalid BTC price: %f", btcPriceUSD)
+	}
 
-	// If the subject asset max amount is greater than 100,000, set the rate
-	// expiry to 1 minute.
+	logrus.Infof("Fetched BTC price: %f USD", btcPriceUSD)
+
+	// Scale the price to an integer (e.g., scale by 1,000,000 for 6 decimal places of precision).
+	scalingFactor := uint64(1_000_000) // Precision factor for 6 decimals
+	scaledPrice := uint64(btcPriceUSD * float64(scalingFactor))
+
+	logrus.Debugf("Scaled BTC price: %d (scaling factor: %d)", scaledPrice, scalingFactor)
+
+	// Convert to FixedPoint using the scaled integer.
+	var subjectAssetRate rfqmath.BigIntFixedPoint
+	if transactionType == oraclerpc.TransactionType_PURCHASE {
+		logrus.Info("Calculating rate for PURCHASE transaction")
+		subjectAssetRate = rfqmath.FixedPointFromUint64[rfqmath.BigInt](scaledPrice, 6)
+	} else {
+		logrus.Info("Calculating rate for SALE transaction (applying discount)")
+		// Optionally adjust the rate for SALE (e.g., a 5% discount).
+		scaledSellPrice := scaledPrice * 95 / 100 // Example: 5% lower for SALE.
+		subjectAssetRate = rfqmath.FixedPointFromUint64[rfqmath.BigInt](scaledSellPrice, 6)
+	}
+
+	// Log the final rate.
+	logrus.Infof("Final subject asset rate (scaled): %v", subjectAssetRate)
+
+	// Set the expiry timestamp as before.
+	expiry := time.Now().Add(5 * time.Minute).Unix()
 	if subjectAssetMaxAmount > 100_000 {
 		expiry = time.Now().Add(1 * time.Minute).Unix()
 	}
 
 	// Marshal subject asset rate to RPC format.
-	rpcSubjectAssetToBtcRate, err := oraclerpc.MarshalBigIntFixedPoint(
-		subjectAssetRate,
-	)
+	rpcSubjectAssetToBtcRate, err := oraclerpc.MarshalBigIntFixedPoint(subjectAssetRate)
 	if err != nil {
+		logrus.Errorf("Failed to marshal subject asset rate: %v", err)
 		return oraclerpc.AssetRates{}, err
 	}
 
 	// Marshal payment asset rate to RPC format.
-	rpcPaymentAssetToBtcRate, err := oraclerpc.MarshalBigIntFixedPoint(
-		rfqmsg.MilliSatPerBtc,
-	)
+	rpcPaymentAssetToBtcRate, err := oraclerpc.MarshalBigIntFixedPoint(rfqmsg.MilliSatPerBtc)
 	if err != nil {
+		logrus.Errorf("Failed to marshal payment asset rate: %v", err)
 		return oraclerpc.AssetRates{}, err
 	}
 

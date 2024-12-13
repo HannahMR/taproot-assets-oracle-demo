@@ -1,3 +1,9 @@
+# Price Oracle Demo Fork
+
+This fork is for experimenting with the price oracle example found here 
+taproot-assets-oracle-demo/tree/main/docs/examples/basic-price-oracle 
+
+
 # Taproot Assets
 
 The Taproot Assets Daemon `tapd` implements the [Taproot Assets Protocol](https://github.com/Roasbeef/bips/blob/bip-tap/bip-tap.mediawiki) for issuing assets on the Bitcoin blockchain. Taproot Assets leverage Taproot transactions to commit to newly created assets and their transfers in an efficient and scalable manner. Multiple assets can be created and transferred in a single bitcoin UTXO, while witness data is transacted and stored off-chain.
