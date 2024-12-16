@@ -77,29 +77,43 @@ func isSupportedSubjectAsset(subjectAsset *oraclerpc.AssetSpecifier) bool {
 		return false
 	}
 
-	supportedAssetIdStr := "f477e00819e4ea0ec87e38a74c808e5ec24fc07ec84f4a6e7f2f1436e7ebe664"
-	supportedAssetIdBytes, err := hex.DecodeString(supportedAssetIdStr)
-	if err != nil {
-		fmt.Println("Error decoding supported asset hex string:", err)
-		return false
+	// List of supported asset IDs (hex-encoded).
+	supportedAssetIds := []string{
+		"f477e00819e4ea0ec87e38a74c808e5ec24fc07ec84f4a6e7f2f1436e7ebe664",
+		"dfb910df99d6e679d4193957d76d2b34a4f4b611bb4ab6950175db4f38280591",
 	}
 
-	// Check the subject asset bytes if set.
-	subjectAssetIdBytes := subjectAsset.GetAssetId()
-	if len(subjectAssetIdBytes) > 0 {
-		logrus.Infof("Subject asset ID bytes populated: %x",
-			supportedAssetIdBytes)
-		return bytes.Equal(supportedAssetIdBytes, subjectAssetIdBytes)
+	// Iterate over supported asset IDs to find a match.
+	for _, supportedAssetIdStr := range supportedAssetIds {
+		// Decode the supported asset ID from hex to bytes.
+		supportedAssetIdBytes, err := hex.DecodeString(supportedAssetIdStr)
+		if err != nil {
+			logrus.Errorf("Error decoding supported asset hex string: %v", err)
+			continue
+		}
+
+		// Check the subject asset bytes if set.
+		subjectAssetIdBytes := subjectAsset.GetAssetId()
+		if len(subjectAssetIdBytes) > 0 {
+			logrus.Infof("Checking subject asset ID bytes: %x", subjectAssetIdBytes)
+			if bytes.Equal(supportedAssetIdBytes, subjectAssetIdBytes) {
+				logrus.Infof("Subject asset ID bytes match supported asset: %s", supportedAssetIdStr)
+				return true
+			}
+		}
+
+		// Check the subject asset string if set.
+		subjectAssetIdStr := subjectAsset.GetAssetIdStr()
+		if len(subjectAssetIdStr) > 0 {
+			logrus.Infof("Checking subject asset ID string: %s", subjectAssetIdStr)
+			if subjectAssetIdStr == supportedAssetIdStr {
+				logrus.Infof("Subject asset ID string matches supported asset: %s", supportedAssetIdStr)
+				return true
+			}
+		}
 	}
 
-	subjectAssetIdStr := subjectAsset.GetAssetIdStr()
-	if len(subjectAssetIdStr) > 0 {
-		logrus.Infof("Subject asset ID str populated: %s",
-			supportedAssetIdStr)
-		return subjectAssetIdStr == supportedAssetIdStr
-	}
-
-	logrus.Infof("Subject asset ID not set")
+	logrus.Info("Subject asset ID not supported")
 	return false
 }
 
