@@ -186,6 +186,17 @@ func (f FixedPoint[T]) WithinTolerance(
 	return result, nil
 }
 
+// I don't know what I'm doing yet.
+func FixedPointFromUint64_DecimalDisplay[N Int[N]](exchangeRate, decimalDisplay uint64) FixedPoint[N] {
+	// Multiply exchangeRate by 10^(decimalDisplay)
+	scaleFactor := uint64(math.Pow10(int(decimalDisplay)))
+	product := exchangeRate * scaleFactor
+
+	// Pass the product and the decimal display to the original FixedPointFromUint64 function,
+	// explicitly using the generic type N.
+	return FixedPointFromUint64[N](product, uint8(decimalDisplay))
+}
+
 // FixedPointFromUint64 creates a new FixedPoint from the given integer and
 // scale. Note that the input here should be *unscaled*.
 func FixedPointFromUint64[N Int[N]](value uint64, scale uint8) FixedPoint[N] {
