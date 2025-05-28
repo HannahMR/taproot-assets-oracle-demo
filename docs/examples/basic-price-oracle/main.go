@@ -257,7 +257,9 @@ func getAssetRates(transactionType oraclerpc.TransactionType,
 	} else {
 		logrus.Info("Calculating rate for SALE transaction (applying discount)")
 		// Optionally adjust the rate for SALE (e.g., a 5% discount).
-		scaledSellPrice := scaledPrice * 95 / 100 // Example: 5% lower for SALE.
+		// Example, 95/100 would provide the 5% discount
+		// Here we have removed the discount for testing by changing 95/100 to 1.
+		scaledSellPrice := scaledPrice * 1 // removed the discount.
 		subjectAssetRate = rfqmath.FixedPointFromUint64[rfqmath.BigInt](scaledSellPrice, 6)
 	}
 
