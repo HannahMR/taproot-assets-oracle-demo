@@ -35,8 +35,19 @@ import (
 )
 
 const (
-	// serviceListenAddress is the listening address of the service.
 	serviceListenAddress = "0.0.0.0:8095"
+)
+
+var (
+	supportedAssetIDs = []string{
+		"c5dc35d9ffa03abcbd22d2d2801d10813970875029843039bf4f99d543d15fef",
+		"c28399c74ffbbfa0166428cb91bf7b196e827d5b4bfec6117433353aa2129d5c",
+		"1a791e3a088e0e3c85c7c4652dd868ce2ea3f19cdc59e9adffafa6996028103e",
+	}
+
+	supportedGroupKeys = []string{
+		"02875ce409b587a6656357639d099ad9eb08396d0dfea8930a45e742c81d6fc782",
+	}
 )
 
 // setupLogger sets up the logger to write logs to a file.
@@ -68,53 +79,65 @@ type RpcPriceOracleServer struct {
 	oraclerpc.UnimplementedPriceOracleServer
 }
 
-// isSupportedSubjectAsset returns true if the given subject asset is supported
-// by the price oracle, and false otherwise.
-func isSupportedSubjectAsset(subjectAsset *oraclerpc.AssetSpecifier) bool {
-	// Ensure that the subject asset is set.
-	if subjectAsset == nil {
-		logrus.Info("Subject asset is not set (nil)")
+func isSupportedAssetID(spec *oraclerpc.AssetSpecifier) bool {
+	if spec == nil {
+		logrus.Info("AssetSpecifier is nil in isSupportedAssetID")
+		return false
+	}
+	for _, idStr := range supportedAssetIDs {
+		idBytes, err := hex.DecodeString(idStr)
+		if err != nil {
+			logrus.Errorf("Failed to decode supported asset ID: %v", err)
+			continue
+		}
+		if bytes.Equal(spec.GetAssetId(), idBytes) || spec.GetAssetIdStr() == idStr {
+			logrus.Infof("Matched supported asset ID: %s", idStr)
+			return true
+		}
+	}
+	logrus.Info("No matching supported asset ID found")
+	return false
+}
+
+func isSupportedGroupKey(spec *oraclerpc.AssetSpecifier) bool {
+	if spec == nil {
+		logrus.Info("AssetSpecifier is nil in isSupportedGroupKey")
+		return false
+	}
+	for _, groupKeyStr := range supportedGroupKeys {
+		groupKeyBytes, err := hex.DecodeString(groupKeyStr)
+		if err != nil {
+			logrus.Errorf("Failed to decode group key: %v", err)
+			continue
+		}
+		if bytes.Equal(spec.GetGroupKey(), groupKeyBytes) || spec.GetGroupKeyStr() == groupKeyStr {
+			logrus.Infof("Matched supported group key: %s", groupKeyStr)
+			return true
+		}
+	}
+	logrus.Info("No matching group key found")
+	return false
+}
+
+func isSupportedSubjectAsset(spec *oraclerpc.AssetSpecifier) bool {
+	if spec == nil {
+		logrus.Warn("Subject asset is nil")
 		return false
 	}
 
-	// List of supported asset IDs (hex-encoded).
-	supportedAssetIds := []string{
-		"c5dc35d9ffa03abcbd22d2d2801d10813970875029843039bf4f99d543d15fef",
-		"c28399c74ffbbfa0166428cb91bf7b196e827d5b4bfec6117433353aa2129d5c",
-		"1a791e3a088e0e3c85c7c4652dd868ce2ea3f19cdc59e9adffafa6996028103e",
+	if isSupportedAssetID(spec) {
+		logrus.Info("Subject asset is supported via asset ID")
+		return true
 	}
 
-	// Iterate over supported asset IDs to find a match.
-	for _, supportedAssetIdStr := range supportedAssetIds {
-		// Decode the supported asset ID from hex to bytes.
-		supportedAssetIdBytes, err := hex.DecodeString(supportedAssetIdStr)
-		if err != nil {
-			logrus.Errorf("Error decoding supported asset hex string: %v", err)
-			continue
-		}
-
-		// Check the subject asset bytes if set.
-		subjectAssetIdBytes := subjectAsset.GetAssetId()
-		if len(subjectAssetIdBytes) > 0 {
-			logrus.Infof("Checking subject asset ID bytes: %x", subjectAssetIdBytes)
-			if bytes.Equal(supportedAssetIdBytes, subjectAssetIdBytes) {
-				logrus.Infof("Subject asset ID bytes match supported asset: %s", supportedAssetIdStr)
-				return true
-			}
-		}
-
-		// Check the subject asset string if set.
-		subjectAssetIdStr := subjectAsset.GetAssetIdStr()
-		if len(subjectAssetIdStr) > 0 {
-			logrus.Infof("Checking subject asset ID string: %s", subjectAssetIdStr)
-			if subjectAssetIdStr == supportedAssetIdStr {
-				logrus.Infof("Subject asset ID string matches supported asset: %s", supportedAssetIdStr)
-				return true
-			}
-		}
+	if isSupportedGroupKey(spec) {
+		logrus.Info("Subject asset is supported via group key")
+		return true
 	}
 
-	logrus.Info("Subject asset ID not supported")
+	logrus.Warnf("Subject asset is not supported (assetIDStr=%s, groupKeyStr=%s)",
+		spec.GetAssetIdStr(), spec.GetGroupKeyStr())
+
 	return false
 }
 
