@@ -18,12 +18,12 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"log"
 	"math/big"
 	"net"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/lightninglabs/taproot-assets/rfqmath"
@@ -141,43 +141,112 @@ func isSupportedSubjectAsset(spec *oraclerpc.AssetSpecifier) bool {
 	return false
 }
 
-// fetchBTCUSDPrice fetches the current BTC to USD exchange rate from a public API.
+// fetchBTCUSDPrice fetches the current BTC to USD exchange rate from multiple public APIs
+// and returns the average price. If at least one source succeeds, it returns the average.
+// If all fail, it returns an error.
 func fetchBTCUSDPrice() (float64, error) {
-	const apiUrl = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd"
-
-	logrus.Infof("Fetching BTC price from: %s", apiUrl)
-
-	resp, err := http.Get(apiUrl)
-	if err != nil {
-		return 0, fmt.Errorf("failed to fetch BTC price: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return 0, fmt.Errorf("non-200 response: %d", resp.StatusCode)
+	type priceSource struct {
+		name  string
+		url   string
+		parse func([]byte) (float64, error)
 	}
 
-	body, err := ioutil.ReadAll(resp.Body)
-	if err != nil {
-		return 0, fmt.Errorf("failed to read response body: %v", err)
+	sources := []priceSource{
+		{
+			name: "CoinGecko",
+			url:  "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd",
+			parse: func(body []byte) (float64, error) {
+				var result map[string]map[string]float64
+				if err := json.Unmarshal(body, &result); err != nil {
+					return 0, err
+				}
+				price, ok := result["bitcoin"]["usd"]
+				if !ok {
+					return 0, fmt.Errorf("BTC price not found in CoinGecko response")
+				}
+				return price, nil
+			},
+		},
+		{
+			name: "CoinDesk",
+			url:  "https://api.coindesk.com/v1/bpi/currentprice/BTC.json",
+			parse: func(body []byte) (float64, error) {
+				var result struct {
+					Bpi map[string]struct {
+						RateFloat float64 `json:"rate_float"`
+					} `json:"bpi"`
+				}
+				if err := json.Unmarshal(body, &result); err != nil {
+					return 0, err
+				}
+				usd, ok := result.Bpi["USD"]
+				if !ok {
+					return 0, fmt.Errorf("BTC price not found in CoinDesk response")
+				}
+				return usd.RateFloat, nil
+			},
+		},
+		{
+			name: "Bitstamp",
+			url:  "https://www.bitstamp.net/api/v2/ticker/btcusd/",
+			parse: func(body []byte) (float64, error) {
+				var result struct {
+					Last string `json:"last"`
+				}
+				if err := json.Unmarshal(body, &result); err != nil {
+					return 0, err
+				}
+				price, err := strconv.ParseFloat(result.Last, 64)
+				if err != nil {
+					return 0, err
+				}
+				return price, nil
+			},
+		},
 	}
 
-	logrus.Debugf("API response body: %s", string(body))
+	var (
+		prices []float64
+		errors []string
+	)
 
-	var result map[string]map[string]float64
-	if err := json.Unmarshal(body, &result); err != nil {
-		logrus.Errorf("Failed to parse API response JSON: %v", err)
-		return 0, fmt.Errorf("failed to parse JSON: %v", err)
+	client := &http.Client{Timeout: 5 * time.Second}
+
+	for _, src := range sources {
+		logrus.Infof("Fetching BTC price from %s: %s", src.name, src.url)
+		resp, err := client.Get(src.url)
+		if err != nil {
+			errors = append(errors, fmt.Sprintf("%s: %v", src.name, err))
+			continue
+		}
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			errors = append(errors, fmt.Sprintf("%s: %v", src.name, err))
+			continue
+		}
+		price, err := src.parse(body)
+		if err != nil {
+			errors = append(errors, fmt.Sprintf("%s: %v", src.name, err))
+			continue
+		}
+		logrus.Infof("Fetched BTC price from %s: %f USD", src.name, price)
+		prices = append(prices, price)
 	}
 
-	price, ok := result["bitcoin"]["usd"]
-	if !ok {
-		logrus.Errorf("BTC price not found in API response")
-		return 0, fmt.Errorf("BTC price not found in response")
+	if len(prices) == 0 {
+		logrus.Errorf("Failed to fetch BTC price from all sources: %v", errors)
+		return 0, fmt.Errorf("failed to fetch BTC price from all sources: %v", errors)
 	}
 
-	logrus.Infof("Fetched BTC price: %f USD", price)
-	return price, nil
+	// Calculate the average price
+	var sum float64
+	for _, p := range prices {
+		sum += p
+	}
+	avg := sum / float64(len(prices))
+	logrus.Infof("Averaged BTC price from %d sources: %f USD", len(prices), avg)
+	return avg, nil
 }
 
 // getPurchaseRate returns the buy (purchase) rate for the asset. The unit of
